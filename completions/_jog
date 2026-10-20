@@ -1,0 +1,7 @@
+#compdef jog
+# Put this file on your fpath before running compinit.
+if ((CURRENT == 2)); then
+	local -a scripts
+	scripts=("${(@f)$(command jog 2>/dev/null)}")
+	compadd -- "${scripts[@]}"
+fi

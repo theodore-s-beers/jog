@@ -1,0 +1,9 @@
+*
+!main.odin
+!README.md
+!completions/
+!completions/**
+!tests/
+!tests/integration.py
+!tests/fixtures/
+!tests/fixtures/*.py

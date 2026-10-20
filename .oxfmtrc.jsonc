@@ -1,0 +1,4 @@
+{
+  "ignorePatterns": [],
+  "proseWrap": "preserve", // temporarily set "never" to collapse hard wraps
+}
