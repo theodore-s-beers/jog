@@ -2,6 +2,7 @@ import json
 import os
 import pty
 import select
+import shlex
 import shutil
 import signal
 import subprocess
@@ -55,6 +56,15 @@ class JogTests(unittest.TestCase):
         self.assertEqual(self.run_jog("input", input="hello\n").stdout, "hello\n")
         self.write({"err": "printf problem >&2"})
         self.assertEqual(self.run_jog("err").stderr, "problem")
+
+    def test_exit_status_range_and_signal(self):
+        for code in (0, 1, 42, 127, 128, 255):
+            with self.subTest(code=code):
+                self.write({"test": f"exit {code}"})
+                self.assertEqual(self.run_jog("test").returncode, code)
+        self.write({"test": "kill -TERM $$", "posttest": "touch post-ran"})
+        self.assertEqual(self.run_jog("test").returncode, 143)
+        self.assertFalse((self.root / "post-ran").exists())
 
     def test_directory_environment_and_bins(self):
         nested = self.root / "src"
@@ -213,8 +223,193 @@ class JogTests(unittest.TestCase):
                 result.stdout, "args\nfail\ninput\n" if shell == "zsh" else "args\n"
             )
 
+    def test_bash_colon_completion(self):
+        self.write({"build:watch": "true", "test:unit:watch": "true"})
+        # Use actual readline completion: hand-built COMP_WORDS missed this bug.
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.chdir(self.root)
+            os.environ["PATH"] = f"{BINARY.parent}:{os.environ['PATH']}"
+            os.execvp("bash", ["bash", "--noprofile", "--norc", "-i"])
+        output = self.root / "completion"
+        try:
+            setup = (
+                f"source {shlex.quote(str(PROJECT / 'completions/jog.bash'))}; "
+                "_capture_line() { printf '%s' \"$READLINE_LINE\" > "
+                f"{shlex.quote(str(output))}; }}; "
+                "bind -x '\"\\C-g\":_capture_line'\n"
+            )
+            os.write(fd, setup.encode())
+            self.drain_terminal(fd, 0.2)
+            for partial, expected in [
+                ("build:w", "build:watch "),
+                ("build:", "build:watch "),
+                ("test:unit:w", "test:unit:watch "),
+                ("build:watch arg", "build:watch arg"),
+            ]:
+                output.unlink(missing_ok=True)
+                os.write(fd, f"\x15jog {partial}\t\x07".encode())
+                deadline = time.monotonic() + 3
+                while not output.exists() and time.monotonic() < deadline:
+                    self.drain_terminal(fd, 0.02)
+                self.assertTrue(output.exists(), "bash completion timed out")
+                self.assertEqual(output.read_text(), f"jog {expected}")
+        finally:
+            os.write(fd, b"\x15exit\n")
+            self.drain_terminal(fd, 0.2)
+            os.close(fd)
+            os.waitpid(pid, 0)
+
+    @staticmethod
+    def drain_terminal(fd, duration):
+        deadline = time.monotonic() + duration
+        while time.monotonic() < deadline:
+            if select.select([fd], [], [], 0.01)[0]:
+                try:
+                    os.read(fd, 65536)
+                except OSError:
+                    break
+
+    def test_signals_sent_to_jog_pid(self):
+        shutil.copyfile(
+            PROJECT / "tests/fixtures/signal_worker.py", self.root / "worker.py"
+        )
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT):
+            for hooks in (False, True):
+                with self.subTest(signal=sig, hooks=hooks):
+                    for name in (
+                        "parent-interrupted",
+                        "child-interrupted",
+                        "post-ran",
+                        "parent.pid",
+                        "child.pid",
+                    ):
+                        (self.root / name).unlink(missing_ok=True)
+                    scripts = {"dev": "python3 worker.py"}
+                    if hooks:
+                        scripts.update({"predev": "true", "postdev": "touch post-ran"})
+                    self.write(scripts)
+                    proc = subprocess.Popen(
+                        [str(BINARY), "dev"],
+                        cwd=self.root,
+                        env={**os.environ, "JOG_SIGNAL_EXIT_ZERO": "1"},
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        start_new_session=True,
+                    )
+                    try:
+                        assert proc.stdout is not None
+                        self.assertTrue(select.select([proc.stdout], [], [], 3)[0])
+                        self.assertEqual(proc.stdout.readline(), b"ready\n")
+                        proc.send_signal(sig)
+                        # communicate also waits for inherited pipes to close,
+                        # so an orphaned worker cannot make this test pass.
+                        proc.communicate(timeout=6)
+                        self.assertEqual(proc.returncode, 128 + sig)
+                        self.assertTrue((self.root / "parent-interrupted").exists())
+                        self.assertTrue((self.root / "child-interrupted").exists())
+                        self.assertFalse((self.root / "post-ran").exists())
+                    finally:
+                        self.cleanup_worker(proc)
+
+    def test_ignored_termination_is_escalated(self):
+        shutil.copyfile(
+            PROJECT / "tests/fixtures/ignore_term.py", self.root / "ignore_term.py"
+        )
+        self.write({"dev": "exec python3 ignore_term.py", "postdev": "touch post-ran"})
+        proc = subprocess.Popen(
+            [str(BINARY), "dev"],
+            cwd=self.root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            assert proc.stdout is not None
+            self.assertTrue(select.select([proc.stdout], [], [], 3)[0])
+            self.assertEqual(proc.stdout.readline(), b"ready\n")
+            proc.terminate()
+            proc.communicate(timeout=6)
+            self.assertEqual(proc.returncode, 143)
+            self.assertFalse((self.root / "post-ran").exists())
+        finally:
+            self.cleanup_worker(proc)
+
+    def cleanup_worker(self, proc):
+        groups = {proc.pid} if proc.poll() is None else set()
+        for name in ("parent.pid", "child.pid"):
+            path = self.root / name
+            if path.exists():
+                try:
+                    groups.add(os.getpgid(int(path.read_text())))
+                except ProcessLookupError:
+                    pass
+        for group in groups:
+            if group == os.getpgrp():
+                continue
+            try:
+                os.killpg(group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        proc.wait(timeout=3)
+        if proc.stdout:
+            proc.stdout.close()
+        if proc.stderr:
+            proc.stderr.close()
+
     def test_terminal_and_ctrl_c(self):
         self.check_terminal(hooks=False)
+
+    def test_terminal_input_and_suspend_resume(self):
+        self.write(
+            {
+                "dev": 'printf "input-ready\\n"; read line; printf "<%s>\\n" "$line"',
+                "postdev": "printf 'post-finished\\n'",
+            }
+        )
+        pid, fd = pty.fork()
+        if pid == 0:
+            os.chdir(self.root)
+            os.execv(str(BINARY), [str(BINARY), "dev"])
+        reaped = False
+        try:
+            self.assertTrue(select.select([fd], [], [], 3)[0])
+            self.assertIn(b"input-ready", os.read(fd, 4096))
+            os.write(fd, b"\x1a")  # Ctrl-Z
+            deadline = time.monotonic() + 3
+            stopped = False
+            while time.monotonic() < deadline:
+                ended, status = os.waitpid(pid, os.WNOHANG | os.WUNTRACED)
+                if ended:
+                    stopped = os.WIFSTOPPED(status)
+                    break
+                self.drain_terminal(fd, 0.02)
+            self.assertTrue(stopped, "jog did not mirror the child's stop")
+            os.kill(pid, signal.SIGCONT)
+            os.write(fd, b"hello terminal\n")
+            output = b""
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                if select.select([fd], [], [], 0.02)[0]:
+                    try:
+                        output += os.read(fd, 4096)
+                    except OSError:
+                        pass
+                ended, status = os.waitpid(pid, os.WNOHANG)
+                if ended:
+                    reaped = True
+                    self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+                    break
+            self.assertTrue(reaped, "resumed script did not finish")
+            self.assertIn(b"<hello terminal>", output)
+            self.assertIn(b"post-finished", output)
+        finally:
+            if not reaped:
+                os.kill(pid, signal.SIGCONT)
+                os.kill(pid, signal.SIGTERM)
+                self.drain_terminal(fd, 3)
+                os.waitpid(pid, 0)
+            os.close(fd)
 
     def test_terminal_and_ctrl_c_with_hooks(self):
         self.check_terminal(hooks=True)
@@ -231,6 +426,7 @@ class JogTests(unittest.TestCase):
         pid, fd = pty.fork()
         if pid == 0:
             os.chdir(self.root)
+            os.environ["JOG_EXPECT_TTY"] = "1"
             os.execv(str(BINARY), [str(BINARY), "terminal"])
         reaped = False
         try:

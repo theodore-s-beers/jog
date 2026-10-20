@@ -18,7 +18,7 @@ RUN case "$TARGETARCH" in \
 
 ENV PATH="/opt/odin:${PATH}"
 WORKDIR /work
-COPY main.odin README.md ./
+COPY main.odin process.odin README.md ./
 COPY completions ./completions
 COPY tests/integration.py ./tests/integration.py
 COPY tests/fixtures ./tests/fixtures

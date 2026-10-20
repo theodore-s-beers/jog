@@ -1,5 +1,6 @@
 *
 !main.odin
+!process.odin
 !README.md
 !completions/
 !completions/**

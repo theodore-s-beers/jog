@@ -33,6 +33,8 @@ jog -- --help        # run a script literally named --help
 
 The first nonzero exit stops the sequence and becomes `jog`'s exit code. Extra args go only to the _requested_ script – not to hook scripts. Scripts whose names start with `pre` or `post` run directly, without hooks. Each stage runs in its own shell: changes to its directory or environment do not leak into the next stage.
 
+`jog` forwards `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT` to the current script's process group and cancels remaining hooks. Processes that ignore termination are force-killed after a 2-second grace period. Processes that deliberately detach into another group are outside this cleanup. Signal termination is reported as exit code `128 + signal`.
+
 ## Environment contract
 
 The caller's environment is inherited, with these values overridden:

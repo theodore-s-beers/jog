@@ -5,7 +5,6 @@ import "core:fmt"
 import "core:os"
 import "core:sort"
 import "core:strings"
-import "core:sys/posix"
 
 main :: proc() {
 	context.allocator = context.temp_allocator
@@ -105,9 +104,6 @@ main :: proc() {
 	if err := os.change_directory(dir); err != nil {
 		fail("cannot enter %s: %v", dir, err)
 	}
-	// A shell sequences hooks; each script gets its own shell and environment.
-	// No package manager is involved. With no remaining hooks, exec the last
-	// script so its exit status and signal termination pass through directly.
 	sequence: [dynamic]string
 	name := args[0]
 	hooks := !strings.has_prefix(name, "pre") && !strings.has_prefix(name, "post")
@@ -118,33 +114,19 @@ main :: proc() {
 	if post := fmt.aprintf("post%s", name); hooks && post in scripts {
 		append(&sequence, post)
 	}
-	if len(sequence) == 1 {
-		original := scripts[name].(json.String)
-		set_env("npm_lifecycle_event", name)
-		set_env("npm_lifecycle_script", original)
-		exec_shell(with_arguments(original, extra))
-	}
-	driver := ""
-	for event, i in sequence {
+	supervisor := make_supervisor()
+	for event in sequence {
 		original := scripts[event].(json.String)
 		command := original
 		if event == name {
 			command = with_arguments(original, extra)
 		}
-		prefix := ""
-		if i == len(sequence) - 1 {
-			prefix = "exec "
+		set_env("npm_lifecycle_event", event)
+		set_env("npm_lifecycle_script", original)
+		if status := run_script(&supervisor, command); status != 0 {
+			os.exit(status)
 		}
-		driver = fmt.aprintf(
-			"%snpm_lifecycle_event=%s\nnpm_lifecycle_script=%s\nexport npm_lifecycle_event npm_lifecycle_script\n%s/bin/sh -c %s || exit $?\n",
-			driver,
-			shell_quote(event),
-			shell_quote(original),
-			prefix,
-			shell_quote(command),
-		)
 	}
-	exec_shell(driver)
 }
 
 with_arguments :: proc(original: string, extra: []string) -> string {
@@ -153,12 +135,6 @@ with_arguments :: proc(original: string, extra: []string) -> string {
 		command = fmt.aprintf("%s %s", command, shell_quote(arg))
 	}
 	return command
-}
-
-exec_shell :: proc(command: string) {
-	argv := []cstring{"sh", "-c", strings.clone_to_cstring(command), nil}
-	posix.execv("/bin/sh", raw_data(argv))
-	fail("could not execute /bin/sh")
 }
 
 validate_tokens :: proc(data: []byte, manifest: string) {
