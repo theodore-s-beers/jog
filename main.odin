@@ -12,8 +12,13 @@ main :: proc() {
 	args := os.args[1:]
 	if len(args) > 0 && (args[0] == "--help" || args[0] == "-h") {
 		fmt.println("Usage: jog [script [--] [args...]]")
-		fmt.println("List or run scripts from the nearest package.json.")
+		fmt.println("List scripts and commands, or run a script from the nearest package.json.")
+		fmt.println("       jog --list-names   List script names only.")
 		return
+	}
+	names_only := len(args) > 0 && args[0] == "--list-names"
+	if names_only && len(args) != 1 {
+		fail("--list-names does not accept arguments")
 	}
 	// `--` also permits scripts whose names collide with jog's own options.
 	if len(args) > 0 && args[0] == "--" {
@@ -71,9 +76,24 @@ main :: proc() {
 		append(&names, name)
 	}
 	sort.quick_sort(names[:])
-	if len(args) == 0 {
+	if len(args) == 0 || names_only {
+		width := 0
 		for name in names {
-			fmt.println(name)
+			width = max(width, len(name))
+		}
+		for name in names {
+			if names_only {
+				fmt.println(name)
+			} else {
+				// Keep multiline commands aligned beneath the command column.
+				indent := strings.repeat(" ", width + 2)
+				command, _ := strings.replace_all(
+					scripts[name].(json.String),
+					"\n",
+					fmt.aprintf("\n%s", indent),
+				)
+				fmt.printfln("%-*s  %s", width, name, command)
+			}
 		}
 		return
 	}

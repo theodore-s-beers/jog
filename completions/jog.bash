@@ -13,7 +13,7 @@ _jog_complete() {
 	fi
 	while IFS= read -r name; do
 		[[ $name == "$word"* ]] && COMPREPLY+=("${name#"$prefix"}")
-	done < <(command jog 2>/dev/null)
+	done < <(command jog --list-names 2>/dev/null)
 	return 0
 }
 complete -F _jog_complete jog

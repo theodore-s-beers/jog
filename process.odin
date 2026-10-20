@@ -1,6 +1,7 @@
 package jog
 
 import "core:c"
+import "core:fmt"
 import "core:strings"
 import "core:sys/posix"
 import "core:time"
@@ -51,6 +52,7 @@ run_script :: proc(s: ^Supervisor, command: string) -> int {
 	if sig := pending_termination(); sig != nil {
 		return 128 + int(sig)
 	}
+	fmt.eprintfln("$ %s", command)
 	argv := []cstring{"sh", "-c", strings.clone_to_cstring(command), nil}
 	gate: [2]posix.FD
 	if posix.pipe(&gate) != .OK {

@@ -41,7 +41,51 @@ class JogTests(unittest.TestCase):
     def test_listing(self):
         result = self.run_jog()
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout, "args   printf '<%s>\\n'\nfail   exit 42\ninput  cat\n"
+        )
+        self.assertEqual(result.stderr, "")
+
+    def test_name_only_listing(self):
+        result = self.run_jog("--list-names")
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "args\nfail\ninput\n")
+        self.assertEqual(result.stderr, "")
+        self.assertNotEqual(self.run_jog("--list-names", "extra").returncode, 0)
+        self.write({"--list-names": "echo script"})
+        self.assertEqual(self.run_jog("--", "--list-names").stdout, "script\n")
+
+    def test_multiline_listing(self):
+        self.write({"test": "echo first\necho second"})
+        self.assertEqual(self.run_jog().stdout, "test  echo first\n      echo second\n")
+
+    def test_execution_reminders_and_hook_order(self):
+        self.write(
+            {
+                "pretest": "echo pre",
+                "test": "printf '<%s>\\n'",
+                "posttest": "echo post",
+            }
+        )
+        result = subprocess.run(
+            [str(BINARY), "test", "a b"],
+            cwd=self.root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(
+            result.stdout,
+            "$ echo pre\npre\n$ printf '<%s>\\n' 'a b'\n<a b>\n$ echo post\npost\n",
+        )
+        result = self.run_jog("test", "a b")
+        self.assertEqual(result.stdout, "pre\n<a b>\npost\n")
+        self.assertEqual(
+            result.stderr, "$ echo pre\n$ printf '<%s>\\n' 'a b'\n$ echo post\n"
+        )
 
     def test_arguments_are_literal(self):
         args = ["a b", "", "it's", "$(touch injected)", "; echo bad", "*", "a\nb"]
@@ -55,7 +99,7 @@ class JogTests(unittest.TestCase):
         self.assertEqual(self.run_jog("fail").returncode, 42)
         self.assertEqual(self.run_jog("input", input="hello\n").stdout, "hello\n")
         self.write({"err": "printf problem >&2"})
-        self.assertEqual(self.run_jog("err").stderr, "problem")
+        self.assertEqual(self.run_jog("err").stderr, "$ printf problem >&2\nproblem")
 
     def test_exit_status_range_and_signal(self):
         for code in (0, 1, 42, 127, 128, 255):
@@ -132,6 +176,13 @@ class JogTests(unittest.TestCase):
             self.assertEqual(result.returncode, 37)
             self.assertEqual(
                 result.stdout.splitlines(), names[: names.index(failing) + 1]
+            )
+            self.assertEqual(
+                result.stderr.splitlines(),
+                [
+                    f"$ echo {name}; exit {37 if name == failing else 0}"
+                    for name in names[: names.index(failing) + 1]
+                ],
             )
 
     def test_explicit_hook_does_not_recurse(self):
@@ -270,6 +321,22 @@ class JogTests(unittest.TestCase):
                 except OSError:
                     break
 
+    def wait_for_terminal_line(self, fd, expected):
+        output = b""
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if select.select([fd], [], [], 0.02)[0]:
+                try:
+                    chunk = os.read(fd, 65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                output += chunk
+                if expected in output.splitlines():
+                    return
+        self.fail(f"terminal did not produce {expected!r}; got {output!r}")
+
     def test_signals_sent_to_jog_pid(self):
         shutil.copyfile(
             PROJECT / "tests/fixtures/signal_worker.py", self.root / "worker.py"
@@ -373,8 +440,7 @@ class JogTests(unittest.TestCase):
             os.execv(str(BINARY), [str(BINARY), "dev"])
         reaped = False
         try:
-            self.assertTrue(select.select([fd], [], [], 3)[0])
-            self.assertIn(b"input-ready", os.read(fd, 4096))
+            self.wait_for_terminal_line(fd, b"input-ready")
             os.write(fd, b"\x1a")  # Ctrl-Z
             deadline = time.monotonic() + 3
             stopped = False
@@ -430,8 +496,7 @@ class JogTests(unittest.TestCase):
             os.execv(str(BINARY), [str(BINARY), "terminal"])
         reaped = False
         try:
-            self.assertTrue(select.select([fd], [], [], 5)[0], "terminal timed out")
-            self.assertIn(b"ready", os.read(fd, 1024))
+            self.wait_for_terminal_line(fd, b"ready")
             os.write(fd, b"\x03")
             # A terminal interrupt must kill the job, not leave it running.
             deadline = time.monotonic() + 5

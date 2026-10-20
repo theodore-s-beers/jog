@@ -15,7 +15,7 @@ Put the resulting `jog` binary on your `PATH`.
 ## Usage
 
 ```sh
-jog                  # list scripts alphabetically
+jog                  # list script names and commands alphabetically
 jog dev              # execute dev script
 jog test --watch     # forward arguments
 jog test -- --watch  # optional arg separator
@@ -26,6 +26,9 @@ jog -- --help        # run a script literally named --help
 - Scripts run from that package's directory through `/bin/sh`, regardless of your interactive shell.
 - Script names must match exactly.
 - Additional args are shell-quoted and appended to the script.
+- Before each script or hook runs, its command is printed as `$ <command>` on `stderr`.
+
+Use `jog --list-names` for names only, as used by shell completions.
 
 ## Lifecycle hooks
 
