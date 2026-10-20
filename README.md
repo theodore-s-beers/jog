@@ -1,6 +1,6 @@
 # jog
 
-A small native runner for `package.json` scripts, written in Odin.
+A small native runner for `package.json` scripts, written in Odin. Inspired by [`dum`](https://github.com/egoist/dum).
 
 ## Build
 
@@ -42,13 +42,13 @@ The first nonzero exit stops the sequence and becomes `jog`'s exit code. Extra a
 
 The caller's environment is inherited, with these values overridden:
 
-| Variable               | Value                                                                                  |
-| ---------------------- | -------------------------------------------------------------------------------------- |
-| `PATH`                 | Package and ancestor `node_modules/.bin` dirs, nearest first, then the original `PATH` |
-| `INIT_CWD`             | Absolute directory where `jog` was invoked                                             |
-| `npm_package_json`     | Absolute path to the selected manifest                                                 |
-| `npm_lifecycle_event`  | Name of the current stage, including hook names                                        |
-| `npm_lifecycle_script` | Original command for that stage, before extra arguments                                |
+| Variable               | Value                                                                            |
+| ---------------------- | -------------------------------------------------------------------------------- |
+| `PATH`                 | Package & ancestor `node_modules/.bin` dirs, nearest first, then original `PATH` |
+| `INIT_CWD`             | Absolute directory where `jog` was invoked                                       |
+| `npm_package_json`     | Absolute path to the selected manifest                                           |
+| `npm_lifecycle_event`  | Name of the current stage, including hook names                                  |
+| `npm_lifecycle_script` | Original command for that stage, before extra arguments                          |
 
 `jog` does not read `.npmrc`, select workspaces, install dependencies, or provide npm's implicit scripts and additional environment variables.
 
