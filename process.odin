@@ -85,10 +85,11 @@ run_script :: proc(s: ^Supervisor, command: string) -> int {
 	}
 	posix.close(gate[0])
 	if posix.setpgid(pid, pid) != .OK {
+		err := posix.errno()
 		posix.close(gate[1])
 		posix.kill(pid, .SIGKILL)
 		posix.waitpid(pid, nil, {})
-		fail("cannot create script process group")
+		fail("cannot create script process group: %v (%s)", err, posix.strerror(err))
 	}
 	foreground := s.tty >= 0 && posix.tcgetpgrp(s.tty) == s.group
 	if foreground && posix.tcsetpgrp(s.tty, pid) != .OK {
