@@ -68,9 +68,6 @@ run_script :: proc(s: ^Supervisor, command: string) -> int {
 		// Only POSIX calls between fork and exec. The parent opens the gate
 		// after assigning the process group and handing over the terminal.
 		posix.close(gate[1])
-		if posix.setpgid(0, 0) != .OK {
-			posix._exit(126)
-		}
 		byte: u8
 		if posix.read(gate[0], &byte, 1) != 1 {
 			posix._exit(126)
